@@ -149,7 +149,9 @@ ds-rpc-01/
 
 # 6. Existing Authentication
 
-Current implementation uses FastAPI HTTP Basic authentication.
+Current implementation uses FastAPI HTTP Basic authentication with an in-memory user dictionary in `app/main.py`.
+
+Target persistence: PostgreSQL will become the primary relational database for users, roles, permissions, RBAC mappings, and document metadata/access-control metadata. The in-memory store is temporary scaffolding and must be replaced during Phase 2 when database persistence is implemented.
 
 Existing users:
 
@@ -255,17 +257,25 @@ Target architecture:
                      ▼                         ▼
               Authentication              Input Guardrail
                      │                         │
-                     ▼                         │
-                   RBAC ◄─────────────────────┘
-                     │
-                     ▼
-              Query Processing
+                     └────────────┬────────────┘
+                                  ▼
+                                 RBAC
+                                  │
+                                  ▼
+                            PostgreSQL
+                     (users, roles, permissions,
+                      RBAC mappings, document metadata,
+                      access-control metadata)
+                                  │
+                                  ▼
+                           Query Processing
                      │
                      ▼
             Role-Filtered Retrieval
                      │
                      ▼
                 Vector DB
+           (embeddings + retrieval metadata)
                      │
                      ▼
                  Reranking
@@ -292,6 +302,15 @@ Target architecture:
         Logs      Metrics     Traces
 ```
 
+### Data storage responsibilities
+
+| Store | Responsibility |
+| ----- | -------------- |
+| **PostgreSQL** | Primary relational database for users, roles, permissions, RBAC mappings, document metadata, and access-control metadata |
+| **Vector DB** | Embeddings and retrieval-optimized metadata for semantic search and role-filtered retrieval |
+
+PostgreSQL is the source of truth for identity, authorization, and document access metadata. The vector database supports semantic retrieval and may hold denormalized metadata copies for efficient filtering, but authorization decisions must not depend on the vector database alone.
+
 This architecture is a target. It must evolve based on implementation decisions rather than being blindly implemented all at once.
 
 ---
@@ -304,6 +323,7 @@ Current/project technologies:
 * FastAPI
 * Pydantic
 * uv
+* PostgreSQL (primary relational database for users, roles, permissions, RBAC mappings, and document/access-control metadata)
 * LLM API
 * Embedding model/API
 * Vector database
@@ -445,46 +465,87 @@ The application has a clean and maintainable foundation for further development.
 
 # Phase 2 — Authentication & RBAC
 
-Goal: Build a proper authorization system independent of RAG.
+Goal: Build a proper authorization system independent of RAG, backed by PostgreSQL for users, roles, permissions, and RBAC mappings.
 
 ### Steps
 
 * [x] 2.1 Review authentication vs authorization
 * [x] 2.2 Define role model
 * [x] 2.3 Define permissions
-* [ ] 2.4 Define role-to-resource mapping
-* [ ] 2.5 Implement authorization dependency
-* [ ] 2.6 Implement access-denied behavior
-* [ ] 2.7 Add C-Level role
-* [ ] 2.8 Add Employee/General role
-* [ ] 2.9 Secure passwords appropriately
-* [ ] 2.10 Test every role/resource combination
+* [x] 2.4 Define role-to-resource mapping
+* [x] 2.5 Design PostgreSQL schema for users, roles, permissions, and RBAC mappings
+* [x] 2.6 Configure PostgreSQL connection and database settings
+* [x] 2.7 Implement PostgreSQL-backed user and role persistence
+* [x] 2.8 Implement authorization dependency
+* [x] 2.9 Implement access-denied behavior
+* [x] 2.10 Add C-Level role
+* [x] 2.11 Add Employee/General role
+* [x] 2.12 Secure passwords appropriately
+* [x] 2.13 Test every role/resource combination
 
 ### Phase completion criteria
 
-Users can authenticate and access only resources permitted by their roles.
+Users can authenticate against PostgreSQL and access only resources permitted by their roles.
 
 ---
 
 # Phase 3 — Document Ingestion
 
-Goal: Convert the existing knowledge base into structured documents.
+Goal: Convert the existing knowledge base into structured documents with metadata persisted in PostgreSQL.
 
 ### Steps
 
-* [ ] 3.1 Design document metadata model
-* [ ] 3.2 Implement Markdown loader
-* [ ] 3.3 Implement CSV loader
-* [ ] 3.4 Create normalized document representation
-* [ ] 3.5 Add department metadata
-* [ ] 3.6 Add access-control metadata
-* [ ] 3.7 Design chunking strategy
-* [ ] 3.8 Implement chunking
-* [ ] 3.9 Validate generated chunks
+* [x] 3.1 Design document metadata model (PostgreSQL as canonical store)
+
+  Document metadata is stored in PostgreSQL as the canonical metadata store.
+
+  `documents`:
+  - id
+  - name
+  - source_path
+  - file_type
+  - department
+  - description
+  - is_active
+  - created_at
+  - updated_at
+
+  `document_permissions`:
+  - document_id
+  - permission_id
+
+  The existing RBAC permission model is reused for document access control.
+  Document content is not stored in PostgreSQL at this stage.
+  Chunks and embeddings will be introduced in later phases.
+* [x] 3.2 Implement Markdown loader
+* [x] 3.3 Implement CSV loader
+* [x] 3.4 Create normalized document representation
+* [x] 3.5 Add department metadata
+* [x] 3.6 Add access-control metadata
+* [x] 3.7 Persist document metadata and access-control metadata in PostgreSQL
+* [x] 3.8 Design chunking strategy
+
+  Initial chunking strategy:
+  - Target chunk size: approximately 800 characters.
+  - Overlap: approximately 150 characters.
+  - Markdown documents will use structure-aware chunking,
+    preferring headings and paragraphs as boundaries.
+  - CSV documents will preserve complete rows and group rows
+    into chunks without splitting individual records.
+  - Each generated chunk will inherit:
+    - document_id
+    - department
+    - required_permission
+  - Chunking parameters are initial baselines and may be tuned
+    after retrieval evaluation.
+  - Security metadata must be preserved on every chunk so that
+    RBAC filtering can occur before retrieval results reach the LLM.  
+* [x] 3.9 Implement chunking
+* [x] 3.10 Validate generated chunks
 
 ### Phase completion criteria
 
-All knowledge-base files can be converted into clean, metadata-rich chunks.
+All knowledge-base files can be converted into clean, metadata-rich chunks with document and access-control metadata stored in PostgreSQL.
 
 ---
 
@@ -494,15 +555,23 @@ Goal: Build semantic retrieval infrastructure.
 
 ### Steps
 
-* [ ] 4.1 Understand embeddings
-* [ ] 4.2 Select embedding model
-* [ ] 4.3 Generate embeddings
-* [ ] 4.4 Select vector database
-* [ ] 4.5 Create collection/index
-* [ ] 4.6 Store embeddings and metadata
-* [ ] 4.7 Implement similarity search
-* [ ] 4.8 Test semantic retrieval
-* [ ] 4.9 Validate metadata filtering
+* [x] 4.1 Understand embeddings
+* [x] 4.2 Select embedding model
+
+  - Embedding Model Decision: Qwen/Qwen3-Embedding-0.6B
+  - Deployment: Local inference
+  - Initial output dimension: 1024
+  - Rationale: Selected for its retrieval capabilities, instruction-aware embedding support, multilingual coverage, configurable embedding dimensions, local deployment capability, and suitability for the project's 16 GB RAM development environment.
+* [x] 4.3 Generate embeddings
+* [x] 4.4 Select vector database
+  - Vector Database Decision: Qdrant
+  - Deployment: Local/self-hosted initially
+  - Rationale: Selected as a dedicated vector retrieval engine with strong metadata filtering, local deployment support, Python integration, and a clear separation between PostgreSQL's canonical document/RBAC data and semantic retrieval infrastructure.
+* [x] 4.5 Create collection/index
+* [x] 4.6 Store embeddings and retrieval metadata (aligned with PostgreSQL document/access-control metadata)
+* [x] 4.7 Implement similarity search
+* [x] 4.8 Test semantic retrieval
+* [x] 4.9 Validate metadata filtering
 
 ### Phase completion criteria
 
@@ -516,15 +585,15 @@ Goal: Build a working RAG pipeline without advanced security features.
 
 ### Steps
 
-* [ ] 5.1 Implement query processing
-* [ ] 5.2 Implement retrieval service
-* [ ] 5.3 Design context builder
-* [ ] 5.4 Select LLM
-* [ ] 5.5 Create RAG prompt
-* [ ] 5.6 Implement LLM generation
-* [ ] 5.7 Implement source attribution
-* [ ] 5.8 Connect RAG to `/chat`
-* [ ] 5.9 Test end-to-end RAG
+* [x] 5.1 Implement query processing
+* [x] 5.2 Implement retrieval service
+* [x] 5.3 Design context builder
+* [x] 5.4 Design and implement LLM abstraction + configuration
+* [x] 5.5 Create RAG prompt
+* [x] 5.6 Implement LLM generation
+* [x] 5.7 Implement source attribution
+* [x] 5.8 Connect RAG to `/chat`
+* [x] 5.9 Test end-to-end RAG
 
 ### Phase completion criteria
 
@@ -679,7 +748,7 @@ Goal: Deploy the project as a production-style application.
 ### Steps
 
 * [ ] 12.1 Create Dockerfile
-* [ ] 12.2 Create Docker Compose configuration
+* [ ] 12.2 Create Docker Compose configuration (including PostgreSQL service)
 * [ ] 12.3 Containerize application
 * [ ] 12.4 Add health checks
 * [ ] 12.5 Add CI pipeline
@@ -752,7 +821,7 @@ Authorization must happen before sensitive data reaches the LLM.
 
 ## Principle 2 — Metadata is security-critical
 
-Document chunks should contain authorization metadata.
+Document chunks should contain authorization metadata. PostgreSQL is the canonical store for document metadata and access-control metadata; retrieval layers must stay consistent with that source of truth.
 
 ## Principle 3 — LLM is not a security boundary
 
@@ -801,6 +870,12 @@ Inspect the existing repository files and understand the current implementation 
 ---
 
 # 17. Change Log
+
+## 2026-08-21
+
+Architectural decision: PostgreSQL is the primary relational database for users, roles, permissions, RBAC mappings, and document metadata/access-control metadata.
+
+Updated target architecture, technology direction, Phase 2 (Authentication & RBAC), Phase 3 (Document Ingestion), Phase 4 (embeddings storage alignment), Phase 12 (Docker Compose), and architectural principles to reflect PostgreSQL persistence. No implementation changes have been made yet.
 
 ## 2026-08-18
 
